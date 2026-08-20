@@ -1,0 +1,18 @@
+{
+  "FileAccess": {
+    "SandboxDir": "C:\\AI-Sandbox\\projects",
+    "BackupDir": "C:\\AI-Sandbox\\backups",
+    "MaxOneFileSizeInBytes": 4194304,
+    "MaxQuantityFiles": 5,
+    "MaxTotalSizeInBytes": 10485760,
+    "MaxTreeEntries": 2000,
+    "MaxSearchResults": 50,
+    "ApiKey": "",
+    "RateLimit": {
+      "Enabled": true,
+      "WindowInSeconds": 60,
+      "PermitLimit": 100,
+      "QueueLimit": 0
+    }
+  }
+}

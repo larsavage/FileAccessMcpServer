@@ -1,0 +1,32 @@
+# Build context exclusions — меньше образ и без локального состояния.
+
+# .NET build output
+**/bin/
+**/obj/
+artifacts/
+dist/
+Publish/
+publish/
+
+# IDE
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.userosscache
+
+# VCS
+.git/
+.gitignore
+
+# Logs
+*.log
+
+# Реальный конфиг НЕ попадает в образ: содержит локальные пути/секреты.
+# Для работы контейнера смонтируйте config.json или задайте FILEACCESS__* ENV.
+config.json
+*.local.json
+
+# Пример конфига держим в образе как справку.
+!config.example.json
