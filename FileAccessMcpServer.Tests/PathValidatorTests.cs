@@ -4,6 +4,7 @@ using FileAccessMcpServer.Tests.Infra;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using Xunit;
+using Xunit.Sdk;
 
 namespace FileAccessMcpServer.Tests
 {
@@ -120,6 +121,30 @@ namespace FileAccessMcpServer.Tests
         }
 
         [Fact]
+        public void ValidateAndGetAbsolutePath_EmptyPath_ResolvesToSandboxRoot()
+        {
+            using var sb = new TempSandbox();
+            var validator = CreateValidator(sb.SandboxDir);
+
+            var error = validator.ValidateAndGetAbsolutePath(string.Empty, out string absolutePath);
+
+            Assert.Null(error);
+            Assert.Equal(Path.GetFullPath(sb.SandboxDir), absolutePath);
+        }
+
+        [Fact]
+        public void ValidateAndGetAbsolutePath_WhitespacePath_ResolvesToSandboxRoot()
+        {
+            using var sb = new TempSandbox();
+            var validator = CreateValidator(sb.SandboxDir);
+
+            var error = validator.ValidateAndGetAbsolutePath("   ", out string absolutePath);
+
+            Assert.Null(error);
+            Assert.Equal(Path.GetFullPath(sb.SandboxDir), absolutePath);
+        }
+
+        [Fact]
         public void SymlinkPointingOutsideSandbox_IsRejected()
         {
             using var sb = new TempSandbox();
@@ -127,9 +152,10 @@ namespace FileAccessMcpServer.Tests
             File.WriteAllText(outsideFile, "secret");
             string link = Path.Combine(sb.SandboxDir, "link.txt");
 
-            // Симлинки на Windows требуют dev mode/прав администратора — при недоступности пропускаем.
+            // Симлинки на Windows требуют dev mode/прав администратора — при недоступности
+            // тест помечается как skipped (а не проходит впустую).
             if (!TryCreateFileSymlink(outsideFile, link))
-                return;
+                throw SkipException.ForSkip("Symlinks are not supported/enabled in this environment.");
 
             var validator = CreateValidator(sb.SandboxDir);
 
@@ -145,7 +171,7 @@ namespace FileAccessMcpServer.Tests
             string link = Path.Combine(sb.SandboxDir, "alias.txt");
 
             if (!TryCreateFileSymlink(innerTarget, link))
-                return;
+                throw SkipException.ForSkip("Symlinks are not supported/enabled in this environment.");
 
             var validator = CreateValidator(sb.SandboxDir);
 

@@ -218,22 +218,6 @@ namespace FileAccessMcpServer.Core
         }
 
         /// <summary>
-        /// Проверяет, что переданный путь не пустой.
-        /// </summary>
-        /// <param name="path">Проверяемый путь.</param>
-        /// <returns><c>null</c>, если путь не пустой; OperationResult с ошибкой иначе.</returns>
-        private OperationResult? ValidatePathNotEmpty(string path)
-        {
-            if (string.IsNullOrWhiteSpace(path))
-            {
-                _logger.LogWarning("Path parameter cannot be empty.");
-                return OperationResult.Fail($"Parameter {nameof(path)} cannot be empty");
-            }
-
-            return null;
-        }
-
-        /// <summary>
         /// Вычисляет абсолютный путь, комбинируя basePath с sandbox при необходимости.
         /// </summary>
         /// <param name="path">Относительный или абсолютный путь.</param>
@@ -252,7 +236,7 @@ namespace FileAccessMcpServer.Core
         /// <summary>
         /// Валидирует путь и возвращает абсолютный путь к файлу/директории.
         /// </summary>
-        /// <param name="path">Путь к файлу или директории.</param>
+        /// <param name="path">Путь к файлу или директории. Пустая строка или пробелы трактуются как корень песочницы.</param>
         /// <param name="absolutePath">Выходная переменная для абсолютного пути (по умолчанию null).</param>
         /// <param name="withCheckExist"><c>true</c>, чтобы проверять существование; <c>false</c>, чтобы не проверять.</param>
         /// <returns><c>null</c>, если валидация успешна; OperationResult с ошибкой иначе.</returns>
@@ -261,10 +245,15 @@ namespace FileAccessMcpServer.Core
             absolutePath = string.Empty;
 
             if (ValidateSandboxConfigured() is { } errorSandbox) return errorSandbox;
-            if (ValidatePathNotEmpty(path) is { } errorPath) return errorPath;
 
             string sd = _sandboxContext.SandboxDir!;
-            absolutePath = ComputeAbsolutePath(path, sd);
+
+            // Пустой/отсутствующий путь трактуется как корень песочницы: это соответствует
+            // значениям по умолчанию basePath/path ("") в MCP-инструментах каталогов и
+            // позволяет оперировать всей песочницей целиком.
+            absolutePath = string.IsNullOrWhiteSpace(path)
+                ? Path.GetFullPath(sd)
+                : ComputeAbsolutePath(path, sd);
 
             if (!ChrootValidation(sd, absolutePath))
                 return OperationResult.Fail("Security Error: Attempted access outside the sandbox.");
