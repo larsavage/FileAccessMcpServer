@@ -8,6 +8,7 @@
     "MaxTreeEntries": 2000,
     "MaxSearchResults": 50,
     "ApiKey": "",
+    "HttpSessionMode": "statefulForInitializeClients",
     "RateLimit": {
       "Enabled": true,
       "WindowInSeconds": 60,

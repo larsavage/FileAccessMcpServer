@@ -486,13 +486,32 @@ namespace FileAccessMcpServer.Tools
         }
 
         /// <summary>
-        /// Удаляет файл внутри песочницы. Требует обязательного подтверждения через токен confirmToken.
+        /// Удаляет файл внутри песочницы. Требует обязательного подтверждения: через elicitation
+        /// (если клиент его поддерживает) либо через одноразовый токен confirmToken.
         /// </summary>
         [McpServerTool(Name = "file_delete")]
         [Description("Удаляет указанный файл с диска внутри песочницы. ВНИМАНИЕ: Этот инструмент является деструктивным и Обязательно требует явного подтверждения (confirmation) от пользователя перед каждым выполнением! Не вызывайте скрытно.")]
-        public async Task<OperationResult> FileDeleteAsync(
+        public Task<OperationResult> FileDeleteToolAsync(
+            McpServer server,
             [Description("Путь к оригинальному файлу внутри песочницы")] string filePath,
             [Description("Токен подтверждения (оставьте пустым при первом вызове)")] string confirmToken = "")
+        {
+            return FileDeleteCoreAsync(server, filePath, confirmToken);
+        }
+
+        /// <summary>
+        /// Удаляет файл без доступа к <see cref="McpServer"/> (используется тестами и внутренними вызовами).
+        /// Поведение совпадает с инструментом, но elicitation недоступен — применяется токен-флоу.
+        /// </summary>
+        public Task<OperationResult> FileDeleteAsync(string filePath, string confirmToken = "")
+        {
+            return FileDeleteCoreAsync(null, filePath, confirmToken);
+        }
+
+        /// <summary>
+        /// Общая реализация удаления: elicitation с резервным токен-подтверждением.
+        /// </summary>
+        private async Task<OperationResult> FileDeleteCoreAsync(McpServer? server, string filePath, string confirmToken)
         {
             _logger.LogDebug("MCP tool 'file_delete' invoked. FilePath='{FilePath}'", filePath);
 
@@ -502,6 +521,30 @@ namespace FileAccessMcpServer.Tools
             {
                 _logger.LogWarning("MCP tool 'file_delete' rejected. Reason='{Reason}'", result.Message);
                 return result;
+            }
+
+            if (string.IsNullOrWhiteSpace(confirmToken))
+            {
+                // Приоритет — elicitation: пользователь подтверждает операцию в диалоге клиента.
+                var outcome = await ConfirmationService.RequestConfirmationAsync(
+                    server,
+                    _logger,
+                    "Удаление файла",
+                    $"Удалить файл '{absoluteFilePath}'? Действие необратимо.",
+                    CancellationToken.None);
+
+                if (outcome == ConfirmationService.ConfirmationOutcome.Confirmed)
+                {
+                    _logger.LogInformation("Deletion confirmed via elicitation. FilePath='{FilePath}'", absoluteFilePath);
+                    return await _fileService.FileDeleteAsync(absoluteFilePath);
+                }
+
+                if (outcome == ConfirmationService.ConfirmationOutcome.Declined)
+                {
+                    return new OperationResult() { IsSuccess = false, Message = $"[ОТКЛОНЕНО]: Пользователь отклонил удаление файла '{filePath}'." };
+                }
+
+                // Клиент не поддерживает elicitation — переходим на одноразовый токен.
             }
 
             if (string.IsNullOrWhiteSpace(confirmToken))

@@ -149,6 +149,7 @@ namespace FileAccessMcpServer.Core
                         ["MaxTreeEntries"] = 2000,
                         ["MaxSearchResults"] = Consts.DefaultMaxSearchResults,
                         ["ApiKey"] = string.Empty,
+                        ["HttpSessionMode"] = "statefulForInitializeClients",
                         ["RateLimit"] = new Dictionary<string, object?>
                         {
                             ["Enabled"] = true,
@@ -184,9 +185,12 @@ namespace FileAccessMcpServer.Core
             Console.WriteLine("FileAccessMcpServer — MCP-сервер безопасной работы с файлами в песочнице");
             Console.WriteLine();
             Console.WriteLine("Использование:");
-            Console.WriteLine($"  {Path.GetFileName(Environment.ProcessPath)} [--config <path>] [--generate-config|--init] [--help|-h]");
+            Console.WriteLine($"  {Path.GetFileName(Environment.ProcessPath)} [--stdio|--http] [--config <path>] [--generate-config|--init] [--help|-h]");
             Console.WriteLine();
             Console.WriteLine("Аргументы:");
+            Console.WriteLine("  --stdio             Работать через stdio (клиент запускает процесс).");
+            Console.WriteLine("  --http              Работать через Streamable HTTP (по умолчанию).");
+            Console.WriteLine("                      Также поддерживается переменная окружения MCP_TRANSPORT=stdio.");
             Console.WriteLine($"  {ConfigArgName} <path>      Путь к файлу конфигурации (по умолчанию config.json в рабочем каталоге).");
             Console.WriteLine($"  {GenerateConfigArgName}    Сгенерировать конфиг по умолчанию, если файла нет, и выйти.");
             Console.WriteLine($"  {InitArgName}              Алиас для --generate-config.");

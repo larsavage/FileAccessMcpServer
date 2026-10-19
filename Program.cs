@@ -18,8 +18,14 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Console;
 using Microsoft.Extensions.Options;
 
+using ModelContextProtocol.AspNetCore;
+
 internal static class Program
 {
+    private const string StdioTransportArg = "--stdio";
+    private const string HttpTransportArg = "--http";
+    private const string TransportEnvVar = "MCP_TRANSPORT";
+
     internal static async Task<int> Main(string[] args)
     {
         // Регистрация кодовых страниц (windows-1251, cp866 и др.):
@@ -67,6 +73,114 @@ internal static class Program
             Environment.Exit(1);
         }
 
+        // Выбор транспорта: --stdio/--http или переменная окружения MCP_TRANSPORT=stdio.
+        // По умолчанию — Streamable HTTP.
+        return ShouldUseStdioTransport(args)
+            ? await RunStdioAsync(configPath)
+            : await RunHttpAsync(args, configPath);
+    }
+
+    /// <summary>
+    /// Определяет, должен ли сервер работать через stdio (иначе — через Streamable HTTP).
+    /// Приоритет: аргумент <c>--http</c>, затем <c>--stdio</c>, затем переменная окружения <c>MCP_TRANSPORT</c>.
+    /// </summary>
+    private static bool ShouldUseStdioTransport(string[] args)
+    {
+        if (args.Any(a => string.Equals(a, HttpTransportArg, StringComparison.OrdinalIgnoreCase)))
+            return false;
+
+        if (args.Any(a => string.Equals(a, StdioTransportArg, StringComparison.OrdinalIgnoreCase)))
+            return true;
+
+        string? transport = Environment.GetEnvironmentVariable(TransportEnvVar);
+        return string.Equals(transport, "stdio", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Общая настройка конфигурации, валидации и сервисов для обоих транспортов.
+    /// </summary>
+    /// <returns>Проверенные конфигурационные опции.</returns>
+    private static AppOptions ConfigureCommonServices(IHostApplicationBuilder builder, string configPath)
+    {
+        // reloadOnChange: true — изменения config.json применяются без перезапуска сервиса.
+        builder.Configuration.AddJsonFile(configPath, optional: false, reloadOnChange: true);
+
+        // Параметры конфигурации можно переопределять переменными окружения:
+        // FILEACCESS__APIKEY, FILEACCESS__SANDBOXDIR, FILEACCESS__RATELIMIT__ENABLED и т.п.
+        // Провайдер добавляется ПОСЛЕ config.json, поэтому ENV имеет приоритет.
+        builder.Configuration.AddEnvironmentVariables();
+        builder.Services.Configure<AppOptions>(builder.Configuration.GetSection(AppOptions.SectionName));
+
+        var options = builder.Configuration.GetSection(AppOptions.SectionName).Get<AppOptions>() ?? new AppOptions();
+        var validationErrors = ConfigValidator.Validate(options);
+        if (validationErrors.Count > 0)
+        {
+            Console.Error.WriteLine("Invalid configuration. Application will be terminated.");
+            foreach (var error in validationErrors)
+                Console.Error.WriteLine($"  - {error}");
+            Console.Error.WriteLine($"Fix '{configPath}' or regenerate it with '--generate-config'.");
+            Environment.Exit(1);
+        }
+
+        builder.Services.AddScoped<ISandboxContext, SandboxContext>();
+        builder.Services.AddScoped<IBackupOperations, BackupService>();
+        builder.Services.AddScoped<PathValidator, PathValidator>();
+        builder.Services.AddTransient<IFileOperations, FileService>();
+        builder.Services.AddTransient<IDirectoryOperations, DirService>();
+        return options;
+    }
+
+    /// <summary>
+    /// Регистрирует инструменты MCP (файлы, директории, health).
+    /// </summary>
+    private static void AddMcpTools(IMcpServerBuilder mcpBuilder)
+    {
+        mcpBuilder
+            .WithTools<FileTools>()
+            .WithTools<DirTools>()
+            .WithTools<HealthTools>();
+    }
+
+    /// <summary>
+    /// Запускает сервер через stdio-транспорт (для клиентов, запускающих процесс как дочерний: LM Studio, llama.cpp и т.д.).
+    /// </summary>
+    private static async Task<int> RunStdioAsync(string configPath)
+    {
+        var builder = Host.CreateApplicationBuilder();
+
+        // ВАЖНО: в stdio-режиме stdout — это канал протокола MCP. Любой лог в stdout сломает протокол,
+        // поэтому все логи направляются в stderr через LogToStandardErrorThreshold.
+        builder.Logging.ClearProviders();
+        builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
+
+        var appOptions = ConfigureCommonServices(builder, configPath);
+
+        var mcpBuilder = builder.Services.AddMcpServer();
+        AddMcpTools(mcpBuilder);
+        mcpBuilder.WithStdioServerTransport();
+
+        builder.Services.Configure<HostOptions>(options =>
+            options.ShutdownTimeout = TimeSpan.FromSeconds(Consts.DefaultShutdownTimeoutSeconds));
+
+        var host = builder.Build();
+
+        var logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
+        EnsureDirectories(appOptions, logger);
+        RegisterReloadValidation(host.Services, logger, onInvalidConfig: null);
+
+        if (string.IsNullOrWhiteSpace(appOptions.ApiKey))
+            logger.LogWarning("ApiKey is ignored in stdio mode (stdio has no HTTP authentication).");
+        logger.LogInformation("FileAccessMcpServer started in stdio mode. SandboxDir='{SandboxDir}', BackupDir='{BackupDir}'", appOptions.SandboxDir, appOptions.BackupDir);
+
+        await host.RunAsync();
+        return 0;
+    }
+
+    /// <summary>
+    /// Запускает сервер через современный Streamable HTTP (ASP.NET Core).
+    /// </summary>
+    private static async Task<int> RunHttpAsync(string[] args, string configPath)
+    {
         var builder = WebApplication.CreateBuilder(args);
         builder.Host.UseDefaultServiceProvider(options =>
         {
@@ -85,40 +199,15 @@ internal static class Program
             o.TimestampFormat = "yyyy-MM-ddTHH:mm:ss.fffZ";
         });
 
-        // reloadOnChange: true — изменения config.json применяются без перезапуска сервиса.
-        builder.Configuration.AddJsonFile(configPath, optional: false, reloadOnChange: true);
+        var appOptions = ConfigureCommonServices(builder, configPath);
 
-        // Параметры конфигурации можно переопределять переменными окружения:
-        // FILEACCESS__APIKEY, FILEACCESS__SANDBOXDIR, FILEACCESS__RATELIMIT__ENABLED и т.п.
-        // («__» соответствует разделителю «:» в конфигурации, регистр не важен).
-        // Провайдер добавляется ПОСЛЕ config.json, поэтому ENV имеет приоритет —
-        // это удобно для k8s (ConfigMap/Secret) и Docker. Переменные читаются при старте (без hot reload).
-        builder.Configuration.AddEnvironmentVariables();
-        builder.Services.Configure<AppOptions>(builder.Configuration.GetSection(AppOptions.SectionName));
-
-        // Валидация конфигурации при старте: при некорректных параметрах завершаем работу приложения.
-        var appOptions = builder.Configuration.GetSection(AppOptions.SectionName).Get<AppOptions>() ?? new AppOptions();
-        var validationErrors = ConfigValidator.Validate(appOptions);
-        if (validationErrors.Count > 0)
+        var mcpBuilder = builder.Services.AddMcpServer();
+        AddMcpTools(mcpBuilder);
+        mcpBuilder.WithHttpTransport(o =>
         {
-            Console.Error.WriteLine("Invalid configuration. Application will be terminated.");
-            foreach (var error in validationErrors)
-                Console.Error.WriteLine($"  - {error}");
-            Console.Error.WriteLine($"Fix '{configPath}' or regenerate it with '--generate-config'.");
-            Environment.Exit(1);
-        }
-
-        builder.Services.AddScoped<ISandboxContext, SandboxContext>();
-        builder.Services.AddScoped<IBackupOperations, BackupService>();
-        builder.Services.AddScoped<PathValidator, PathValidator>();
-
-        builder.Services.AddTransient<IFileOperations, FileService>();
-        builder.Services.AddTransient<IDirectoryOperations, DirService>();
-        builder.Services.AddMcpServer()
-            .WithHttpTransport(o => o.Stateless = true)
-            .WithTools<FileTools>()
-            .WithTools<DirTools>()
-            .WithTools<HealthTools>();
+            // Stateful (по умолчанию) нужен для server→client запросов (elicitation) по HTTP.
+            o.SessionMode = ParseHttpSessionMode(appOptions.HttpSessionMode);
+        });
 
         // Таймаут graceful shutdown: сколько хост ждёт завершения in-flight запросов
         // после сигнала остановки, прежде чем принудительно завершиться.
@@ -152,11 +241,11 @@ internal static class Program
 
             limiterOptions.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
             {
-                var appOptions = httpContext.RequestServices
+                var currentOptions = httpContext.RequestServices
                     .GetRequiredService<IOptionsMonitor<AppOptions>>()
                     .CurrentValue;
 
-                RateLimitOptions? rateLimit = appOptions.RateLimit;
+                RateLimitOptions? rateLimit = currentOptions.RateLimit;
                 if (rateLimit is null || !rateLimit.Enabled)
                     return RateLimitPartition.GetNoLimiter<string>(string.Empty);
 
@@ -178,17 +267,14 @@ internal static class Program
         var app = builder.Build();
 
         // Graceful shutdown через IHostApplicationLifetime (app.Lifetime).
-        // Хост вызывает ApplicationStopping → завершает in-flight запросы (таймаут
-        // HostOptions.ShutdownTimeout) → вызывает ApplicationStopped.
         int exitCode = 0;
-
         Stopwatch? shutdownStopwatch = null;
 
         app.Lifetime.ApplicationStarted.Register(() =>
         {
             if (string.IsNullOrWhiteSpace(appOptions.ApiKey))
                 app.Logger.LogWarning("ApiKey is empty — running without authentication");
-            app.Logger.LogInformation("Application started. SandboxDir='{SandboxDir}', BackupDir='{BackupDir}'", appOptions.SandboxDir, appOptions.BackupDir);
+            app.Logger.LogInformation("Application started (Streamable HTTP, session mode={SessionMode}). SandboxDir='{SandboxDir}', BackupDir='{BackupDir}'", appOptions.HttpSessionMode, appOptions.SandboxDir, appOptions.BackupDir);
         });
 
         app.Lifetime.ApplicationStopping.Register(() =>
@@ -206,22 +292,10 @@ internal static class Program
         // Валидация при перезагрузке конфигурации: при некорректных параметрах выполняется
         // graceful shutdown через StopApplication(): in-flight запросы успевают завершиться,
         // код возврата процесса — 1.
-        var optionsMonitor = app.Services.GetRequiredService<IOptionsMonitor<AppOptions>>();
-        optionsMonitor.OnChange(newOptions =>
+        RegisterReloadValidation(app.Services, app.Logger, onInvalidConfig: () =>
         {
-            var errors = ConfigValidator.Validate(newOptions);
-            if (errors.Count > 0)
-            {
-                foreach (var error in errors)
-                    app.Logger.LogError("Configuration reload rejected: {Error}", error);
-                app.Logger.LogCritical("Invalid configuration after reload. Performing graceful shutdown.");
-                Interlocked.Exchange(ref exitCode, 1);
-                app.Lifetime.StopApplication();
-                return;
-            }
-
-            EnsureDirectories(newOptions, app.Logger);
-            app.Logger.LogInformation("Configuration reloaded successfully.");
+            Interlocked.Exchange(ref exitCode, 1);
+            app.Lifetime.StopApplication();
         });
 
         // API-ключ: если задан FileAccess:ApiKey, каждый запрос обязан содержать корректный X-Api-Key.
@@ -236,10 +310,22 @@ internal static class Program
     }
 
     /// <summary>
+    /// Преобразует строковое значение конфигурации в <see cref="HttpServerSessionMode"/>.
+    /// Неизвестные значения трактуются как <see cref="HttpServerSessionMode.Stateful"/>.
+    /// </summary>
+    private static HttpServerSessionMode ParseHttpSessionMode(string? value)
+    {
+        return value?.Trim().ToLowerInvariant() switch
+        {
+            "stateless" => HttpServerSessionMode.Stateless,
+            "statefulforinitializeclients" => HttpServerSessionMode.StatefulForInitializeClients,
+            _ => HttpServerSessionMode.Stateful
+        };
+    }
+
+    /// <summary>
     /// Создаёт каталоги песочницы и резервных копий, если они отсутствуют.
     /// </summary>
-    /// <param name="options">Конфигурационные опции (SandboxDir, BackupDir).</param>
-    /// <param name="logger">Логгер для записи событий.</param>
     private static void EnsureDirectories(AppOptions options, ILogger logger)
     {
         if (!string.IsNullOrWhiteSpace(options.SandboxDir) && !Directory.Exists(options.SandboxDir))
@@ -253,5 +339,35 @@ internal static class Program
             Directory.CreateDirectory(options.BackupDir);
             logger.LogInformation("Backup directory created. Path='{BackupDir}'", options.BackupDir);
         }
+    }
+
+    /// <summary>
+    /// Подписывается на перезагрузку конфигурации. При некорректных параметрах вызывается
+    /// <paramref name="onInvalidConfig"/> (для HTTP — graceful shutdown); для stdio дополнительных
+    /// действий не требуется.
+    /// </summary>
+    private static void RegisterReloadValidation(IServiceProvider services, ILogger logger, Action? onInvalidConfig)
+    {
+        var optionsMonitor = services.GetRequiredService<IOptionsMonitor<AppOptions>>();
+        optionsMonitor.OnChange(newOptions =>
+        {
+            var errors = ConfigValidator.Validate(newOptions);
+            if (errors.Count > 0)
+            {
+                foreach (var error in errors)
+                    logger.LogError("Configuration reload rejected: {Error}", error);
+
+                if (onInvalidConfig is not null)
+                {
+                    logger.LogCritical("Invalid configuration after reload. Performing graceful shutdown.");
+                    onInvalidConfig();
+                }
+
+                return;
+            }
+
+            EnsureDirectories(newOptions, logger);
+            logger.LogInformation("Configuration reloaded successfully.");
+        });
     }
 }

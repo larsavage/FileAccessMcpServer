@@ -150,5 +150,28 @@ namespace FileAccessMcpServer.Tests
 
             Assert.Empty(ConfigValidator.Validate(options));
         }
+
+        [Theory]
+        [InlineData("stateful")]
+        [InlineData("stateless")]
+        [InlineData("statefulForInitializeClients")]
+        public void ValidHttpSessionMode_HasNoErrors(string mode)
+        {
+            var options = ValidOptions();
+            options.HttpSessionMode = mode;
+
+            Assert.Empty(ConfigValidator.Validate(options));
+        }
+
+        [Fact]
+        public void InvalidHttpSessionMode_IsReported()
+        {
+            var options = ValidOptions();
+            options.HttpSessionMode = "sideways";
+
+            var errors = ConfigValidator.Validate(options);
+
+            Assert.Contains(errors, e => e.Contains("HttpSessionMode"));
+        }
     }
 }

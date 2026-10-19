@@ -64,6 +64,17 @@ namespace FileAccessMcpServer.Models
         /// ограничение запросов не применяется.
         /// </summary>
         public RateLimitOptions? RateLimit { get; set; }
+
+        /// <summary>
+        /// Режим HTTP-сессий Streamable HTTP: "statefulForInitializeClients" (по умолчанию),
+        /// "stateful" или "stateless".
+        /// Начиная с ревизии 2026-07-28 Streamable HTTP НЕ использует сессии, поэтому режим
+        /// "stateful" несовместим с протоколом 2026-07-28. Значение по умолчанию
+        /// "statefulForInitializeClients" даёт stateful-сессии клиентам с initialize-хендшейком
+        /// (нужны для elicitation) и обслуживает клиентов 2026-07-28 без сессий.
+        /// "stateless" — для горизонтального масштабирования без session affinity.
+        /// </summary>
+        public string HttpSessionMode { get; set; } = "statefulForInitializeClients";
     }
 
     /// <summary>

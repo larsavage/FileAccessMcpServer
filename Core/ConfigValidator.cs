@@ -8,6 +8,13 @@ namespace FileAccessMcpServer.Core
     /// </summary>
     internal static class ConfigValidator
     {
+        private static readonly string[] AllowedHttpSessionModes =
+        {
+            "stateful",
+            "stateless",
+            "statefulForInitializeClients"
+        };
+
         /// <summary>
         /// Выполняет валидацию конфигурации и возвращает список ошибок.
         /// Пустой список означает, что конфигурация корректна.
@@ -66,6 +73,12 @@ namespace FileAccessMcpServer.Core
 
                 if (options.RateLimit.QueueLimit < 0)
                     errors.Add($"'{nameof(RateLimitOptions)}.{nameof(RateLimitOptions.QueueLimit)}' cannot be negative. Current value: {options.RateLimit.QueueLimit}.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(options.HttpSessionMode) &&
+                !AllowedHttpSessionModes.Contains(options.HttpSessionMode.Trim(), StringComparer.OrdinalIgnoreCase))
+            {
+                errors.Add($"'{nameof(AppOptions.HttpSessionMode)}' must be one of: {string.Join(", ", AllowedHttpSessionModes)}. Current value: '{options.HttpSessionMode}'.");
             }
 
             return errors;
